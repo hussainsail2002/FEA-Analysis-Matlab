@@ -1,0 +1,328 @@
+function hbhavnag_project2
+
+% the first row of the variable mesh_type specifies the case and the second
+% row specifies the refinement level, values between 1 to 3 are allowed
+
+mesh_type=[2;1];
+
+[sig_max,disp_max,stress_conc]=calculation(mesh_type);
+
+disp('The Stress concentration factor Analytical')
+disp(stress_conc(mesh_type(1)))
+disp('The maximum value for Stress')
+disp(sig_max)
+disp('The maximum value for displacement')
+disp(disp_max)
+
+disp('The exact values using Richardson Interpolation')
+richardson
+
+end
+
+function [max_sig_yy,max_u_yy,kt]=calculation(m)
+
+mesh=getmesh(m);
+
+% Finding the stiffness matrix
+
+nn=mesh.nn;
+E=3310; % Youngs modulus units in Mpa
+nu=0.375; % poissons ratio
+D=E/(1-nu^2)*[1 nu 0;nu 1 0;0 0 (1-nu)/2];
+
+% Quad table
+a1=-sqrt(3/5);
+a2=sqrt(3/5);
+b1=(5/9)*(5/9);
+b2=(5/9)*(8/9);
+b3=(8/9)*(8/9);
+quad_table =[a1 0 a2 a2 a2 0 a1 a1 0;a1 a1 a1 0 a2 a2 a2 0 0;b1 b2 b1 b2 b1 b2 b1 b2 b3];
+K=spalloc(nn*2,nn*2,8*nn*2);
+z=zeros(1,8);
+for c=mesh.conn
+    xe=mesh.x(:,c);
+    ke=0;
+    for q=quad_table
+        [~,dNdp]=shape8(q);
+        J=xe*dNdp;
+        dNdx=dNdp/J;
+        B=[dNdx(:,1)' z;z dNdx(:,2)';dNdx(:,2)',dNdx(:,1)'];
+        ke=ke+(B'*D*B*q(3)*det(J));
+    end
+    sctr=[2*c-1,2*c];
+    K(sctr,sctr)=K(sctr,sctr)+ke;
+end
+%spy(K)
+
+% Finding the Force vector
+% Getting the connectivity matrix of the top mesh where the load is added.
+
+y_axis=mesh.x(2,:);
+max_y=max(y_axis);
+pos=[];
+for i=1:length(y_axis)
+    if y_axis(i) == max_y
+        pos(end+1)=i;
+    else
+        continue
+    end
+end
+%disp(pos)
+
+x_val=mesh.x(1,pos);
+x_sorted=sort(x_val);
+new_pos=zeros(1,length(pos));
+for i=1:length(x_sorted)
+    for j=1:length(x_sorted)
+        if mesh.x(1,pos(j)) == x_sorted(i)
+            new_pos(i)=pos(j);
+        else
+            continue
+        end
+    end
+end
+%disp(new_pos)
+%disp(mesh.x(1,new_pos))
+len=length(new_pos);
+edge_pos=[1:2:len-2;2:2:len-1;3:2:len];
+edge_conn=zeros(size(edge_pos));
+for i=1:size(edge_pos,1)
+    for j=1:size(edge_pos,2)
+        edge_conn(i,j)=new_pos(edge_pos(i,j));
+    end
+end
+%disp(edge_conn)
+
+quad_table=[[-1 1]/sqrt(3);1 1];
+f=zeros(2*nn,1);
+p_l=14; %N/mm^2
+for c=edge_conn
+    xe=mesh.x(:,c);
+    for q=quad_table
+        [N,dNdp]=shape3(q(1));
+        %x=xe*N;
+        J=xe*dNdp;
+        f(2*c)=f(2*c)+(N*norm(J)*p_l*q(2));
+    end
+    %f(2*c-1)=f(2*c-1)+fe(:,1);
+    %f(2*c)=f(2*c)+fe(:,2);
+end
+% fixing the nodes at the bottom plate
+
+pos_lower=[];
+y_axis=mesh.x(2,:);
+min_y=min(y_axis);
+%pos=[];
+for i=1:length(y_axis)
+    if y_axis(i) == min_y
+        pos_lower(end+1)=i;
+    else
+        continue
+    end
+end
+
+%disp(mesh.x(2,pos_lower))
+fixed_dof=[(2*(pos_lower)')-1;2*pos_lower'];
+%disp(fixed_dof);
+K(fixed_dof,:)=0;
+K(fixed_dof,fixed_dof)=eye(length(fixed_dof));
+%f(fixed_dof)=0;
+
+d=K\f;
+
+A=spalloc(nn,nn,17*nn);
+y_1=zeros(nn,3);
+quad_table =[a1 0 a2 a2 a2 0 a1 a1 0;a1 a1 a1 0 a2 a2 a2 0 0;b1 b2 b1 b2 b1 b2 b1 b2 b3];
+z=zeros(1,8);
+for c=mesh.conn
+    xe=mesh.x(:,c);
+    sctr=[2*c-1;2*c];
+    de=d(sctr);
+    Ae=zeros(length(c));
+    for q=quad_table
+        [N,dNdp]=shape8(q);
+        J=xe*dNdp;
+        dNdx=dNdp/J;
+        B=[dNdx(:,1)' z;z dNdx(:,2)';dNdx(:,2)',dNdx(:,1)'];
+        sig=D*B*de;
+        Ae=Ae+(N*N'*det(J)*q(end));
+        y_1(c,:)=y_1(c,:)+(N*sig'*det(J)*q(end));
+    end
+    A(c,c)=A(c,c)+Ae;
+end
+sig_main=A\y_1;
+sig_yy=sig_main(:,2);
+[max_sig_yy]=max(sig_yy);
+
+if m(1) == 1 || m(1)==2
+    h=8;
+else
+    h=6;
+end
+
+sig_yy_nominal=p_l*(25*6.35)/(6.35*(25-(2*h)));
+kt=max_sig_yy/sig_yy_nominal;
+disp('The Kt value calculated in Matlab')
+disp(kt)
+u_yy=d(2:2:end);
+max_u_yy=max(u_yy);
+
+plotting(mesh,u_yy,sig_yy)
+kt=analyticalSolution();
+
+end
+
+% function to plot the data 
+
+function plotting(mesh,displacement,stress)
+
+p2.vertices=mesh.x';
+p2.faces=mesh.conn';
+p2.faces=p2.faces(:,[1 5 2 6 3 7 4 8]);
+p2.facecolor='interp';
+p2.edgealpha=0.05;
+p2.FaceVertexCData=stress;
+figure (2)
+patch(p2)
+colormap(jet)
+colorbar()
+axis equal;
+hold on;
+%scatter(mesh.x(1,:), mesh.x(2,:), 50, 'filled');
+axis([-15, 15, -40, 40]);
+title('Stress field MPa')
+
+p3.vertices=mesh.x';
+p3.faces=mesh.conn';
+p3.faces=p3.faces(:,[1 5 2 6 3 7 4 8]);
+p3.facecolor='interp';
+p3.edgealpha=0.05;
+p3.FaceVertexCData=displacement;
+figure (3)
+patch(p3)
+colormap(jet)
+colorbar()
+axis equal;
+hold on;
+%scatter(mesh.x(1,:), mesh.x(2,:), 50, 'filled');
+axis([-15, 15, -40, 40]);
+title('Displacement Field in mm')
+end
+
+%This function gets the required mesh based on the input call in the main
+%function
+
+function mesh=getmesh(m)
+subplot(1,3,2);
+if m(1) == 1
+    if m(2) == 1
+        mesh=abaqus_reader('meshes/u-notch2d-h8-r1-Q8-1.inp');
+    elseif m(2) == 2
+        mesh=abaqus_reader('meshes/u-notch2d-h8-r1-Q8-2.inp');
+    elseif m(2) == 3
+        mesh=abaqus_reader('meshes/u-notch2d-h8-r1-Q8-3.inp');
+    end
+elseif m(1)==2
+    if m(2) == 1
+        mesh=abaqus_reader('meshes/u-notch2d-h8-r2-Q8-1.inp');
+    elseif m(2) == 2
+        mesh=abaqus_reader('meshes/u-notch2d-h8-r2-Q8-2.inp');
+    elseif m(2) == 3
+        mesh=abaqus_reader('meshes/u-notch2d-h8-r2-Q8-3.inp');
+    end
+elseif m(1)==3
+    if m(2) == 1
+        mesh=abaqus_reader('meshes/u-notch2d-h6-r3-Q8-1.inp');
+    elseif m(2) == 2
+        mesh=abaqus_reader('meshes/u-notch2d-h6-r3-Q8-2.inp');
+    elseif m(2) == 3
+        mesh=abaqus_reader('meshes/u-notch2d-h6-r3-Q8-3.inp');
+    end
+end
+
+p.vertices = mesh.x';
+p.faces = mesh.conn';
+% Node order for patch must be continuous.
+p.faces = p.faces(:, [1, 5, 2, 6, 3, 7, 4, 8]);
+p.facecolor = 'w';
+figure (1)
+patch(p)
+axis equal;
+hold on;
+scatter(mesh.x(1,:), mesh.x(2,:), 50, '.b');
+axis([-15, 15, -40, 40]);
+title('quad8 mesh (2D)')
+end
+
+function [N, dNdp] = shape8(p) 
+    x=p(1);
+    y=p(2);
+    N=[-(x^2*y)/4 + x^2/4 - (x*y^2)/4 + (x*y)/4 + y^2/4 - 1/4;- (x^2*y)/4 + x^2/4 + (x*y^2)/4 - (x*y)/4 + y^2/4 - 1/4;(x^2*y)/4 + x^2/4 + (x*y^2)/4 + (x*y)/4 + y^2/4 - 1/4;(x^2*y)/4 + x^2/4 - (x*y^2)/4 - (x*y)/4 + y^2/4 - 1/4;(x^2*y)/2 - y/2 - x^2/2 + 1/2;x/2 - (x*y^2)/2 - y^2/2 + 1/2 ;y/2 - (x^2*y)/2 - x^2/2 + 1/2;(x*y^2)/2 - x/2 - y^2/2 + 1/2];
+    dNdp=[(x/2 + y/4 - (x*y)/2 - y^2/4)  (x/4 + y/2 - (x*y)/2 - x^2/4);(x/2 - y/4 - (x*y)/2 + y^2/4) (y/2 - x/4 + (x*y)/2 - x^2/4);(x/2 + y/4 + (x*y)/2 + y^2/4) (x/4 + y/2 + (x*y)/2 + x^2/4);(x/2 - y/4 + (x*y)/2 - y^2/4) (y/2 - x/4 - (x*y)/2 + x^2/4);(x*y - x) (x^2/2 - 1/2);(1/2 - y^2/2) (- y - x*y);(- x - x*y) (1/2 - x^2/2);(y^2/2 - 1/2) (x*y - y)];
+    % Define shape functions and derivatives for the 8-node serendipity element.
+end 
+
+function [N, dNdp] = shape3(p)
+    N=[p^2/2-p/2; 1-p^2; p^2/2+p/2];
+    dNdp=[p-0.5;-2*p; p+0.5];
+    % Define quadratic shape functions and derivatives 
+end 
+
+function Kt = analyticalSolution()
+    h_l= [8 8 6]; 
+    r_l = [1 2 3]; 
+    D_l = [25 25 25]; 
+    Kt = zeros(3,1);
+    for i = 1:3
+        h = h_l(i); 
+        r = r_l(i); 
+        D = D_l(i);
+        c1 = 0.833 + 2.069*sqrt(h/r) - 0.009*h/r;
+        c2 = 2.732 - 4.157*sqrt(h/r) + 0.176*h/r;
+        c3 = -8.859 + 5.327*sqrt(h/r) - 0.320*h/r;
+        c4 = 6.294 - 3.239*sqrt(h/r) + 0.154*h/r;
+        Kt(i) = c1+c2*((2*h)/D)+c3*((2*h)/D)^2+c4*((2*h)/D)^3;
+    end
+
+end
+
+function richardson
+
+r=2;
+% Case 1 
+sig_coarse_1= 113.3377;
+sig_medium_1=116.2424;
+sig_fine_1=115.8822;
+P=log(abs(sig_coarse_1-sig_medium_1)/abs(sig_medium_1-sig_fine_1))/log(r);
+sig_exact_1=sig_fine_1-((sig_medium_1-sig_fine_1)/((r^P)-1));
+disp(sig_exact_1)
+GCI_fm_1=(1.25/(r^P)-1)*(abs(sig_fine_1-sig_medium_1)/sig_fine_1);
+GCI_mc_1=(1.25/(r^P)-1)*(abs(sig_medium_1-sig_coarse_1)/sig_medium_1);
+conv_1=GCI_mc_1/(r^P*GCI_fm_1);
+%disp(conv_1)
+
+% Case 2
+sig_coarse_2= 85.9025;
+sig_medium_2=85.6118;
+sig_fine_2=85.5762;
+P=log(abs(sig_coarse_2-sig_medium_2)/abs(sig_medium_2-sig_fine_2))/log(r);
+sig_exact_2=sig_fine_2-((sig_medium_2-sig_fine_2)/((r^P)-1));
+disp(sig_exact_2)
+GCI_fm_2=(1.25/(r^P)-1)*((sig_fine_2-sig_medium_2)/sig_fine_2);
+GCI_mc_2=(1.25/(r^P)-1)*((sig_medium_2-sig_coarse_2)/sig_medium_2);
+conv_2=GCI_mc_2/(r^P*GCI_fm_2);
+%disp(conv_2)
+
+% Case 3
+sig_coarse_3= 58.2328;
+sig_medium_3=58.1753;
+sig_fine_3=58.1325;
+P=log(abs(sig_coarse_3-sig_medium_3)/abs(sig_medium_3-sig_fine_3))/log(r);
+sig_exact_3=sig_fine_3-((sig_medium_3-sig_fine_3)/((r^P)-1));
+disp(sig_exact_3)
+GCI_fm_3=(1.25/(r^P)-1)*((sig_fine_3-sig_medium_3)/sig_fine_3);
+GCI_mc_3=(1.25/(r^P)-1)*((sig_medium_3-sig_coarse_3)/sig_medium_3);
+conv_3=GCI_mc_3/(r^P*GCI_fm_3);
+%disp(conv_3)
+
+end
